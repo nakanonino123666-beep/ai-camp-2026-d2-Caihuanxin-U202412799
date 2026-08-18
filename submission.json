@@ -1,10 +1,12 @@
 {
-  "milestone": "day-02",
-  "team": "蔡焕新",
+  "milestone": "D2",
+  "team": "就叫这个",
   "members": [
-    "蔡焕新"
+    "蔡焕新",
+    "李光阳",
+    "高绰蓝"
   ],
-  "repository_url": "填写 GitHub 仓库 URL",
+  "repository_url": "https://github.com/nakanonino123666-beep/ai-camp-2026-d2-Caihuanxin-U202412799.git",
   "run_command": "python train.py --model cnn",
   "test_command": "python -m unittest discover -s tests -v",
   "report": "report.md",
