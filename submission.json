@@ -1,0 +1,14 @@
+{
+  "milestone": "day-02",
+  "team": "蔡焕新",
+  "members": [
+    "蔡焕新"
+  ],
+  "repository_url": "填写 GitHub 仓库 URL",
+  "run_command": "python train.py --model cnn",
+  "test_command": "python -m unittest discover -s tests -v",
+  "report": "report.md",
+  "presentation": "presentation.pptx",
+  "presentation_minutes": 3,
+  "student_confirmed_no_secrets": false
+}

@@ -1,0 +1,5 @@
+data/raw/
+runs/
+__pycache__/
+*.pyc
+
