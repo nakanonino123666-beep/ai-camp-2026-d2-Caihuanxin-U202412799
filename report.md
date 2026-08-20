@@ -51,6 +51,10 @@ python train.py --model cnn
 # 错误分析（同一划分，全部错误）
 python analyze_errors.py
 
+# 扩展实验：ResNet18 迁移学习（首次运行需联网下载 ImageNet 权重）
+python transfer_experiment.py
+python transfer_experiment.py --no-pretrained
+
 # 测试
 python -m unittest discover -s tests -v
 ```
@@ -58,9 +62,10 @@ python -m unittest discover -s tests -v
 本机已实际执行并记录的输出：
 
 - 环境：Python 3.13.5、torch 2.13.0+cpu、torchvision 0.28.0+cpu、matplotlib 3.10.7
-- 测试：3/3 通过（`OK`）——`test_cnn_output_has_two_class_scores`、`test_balanced_split_uses_both_classes`、`test_false_negative_count`
+- 测试：6/6 通过（`OK`）——原有 3 个（形状契约、划分、混淆计数）+ 扩展 3 个（分层 fit/val 划分、阈值对 recall 的影响、目标召回率的最高阈值选择）
 - 张量形状追踪（真实输出）：输入 `(4, 3, 64, 64)` → Conv2d `(4, 8, 64, 64)` → ReLU `(4, 8, 64, 64)` → MaxPool2d `(4, 8, 32, 32)` → Conv2d `(4, 16, 32, 32)` → ReLU `(4, 16, 32, 32)` → MaxPool2d `(4, 16, 16, 16)` → Flatten `(4, 4096)` → Linear `(4, 2)`；总参数量 9,586
 - 主程序输出文件：`runs/baseline.json`、`runs/cnn.json`、`runs/baseline-errors.png`、`runs/cnn-errors.png`、`runs/error-analysis.csv`
+- 扩展输出文件：`runs/resnet18_pretrained.json`、`runs/resnet18_pretrained-errors.png`、`runs/resnet18_pretrained-validation-recall-threshold.png`（scratch 对应 `resnet18_scratch_*`）
 - 可复现性旁证：`analyze_errors.py` 用同一 seed、同一划分独立重训，得到与 `cnn.json` 完全一致的 43 个漏检 + 13 个误报
 
 ## 4. 基线与候选
@@ -95,6 +100,26 @@ python -m unittest discover -s tests -v
 
 结论：CNN 明显比基线有用——它把误报从 150 张降到 13 张（筛查效率大幅提高），同时仍能找出 107/150 张真裂缝。但它**漏检了 43 张真裂缝**：这些照片需要人工查看却不会被优先发现，这正是初筛工具必须向使用者明示的风险。
 
+### 扩展候选：ImageNet 预训练 ResNet18（迁移学习）
+
+- **方法**：`transfer_experiment.py`（详见 EXTENSION.md）。torchvision 官方 ImageNet 预训练 ResNet18，替换最后一层为二分类；先冻结 backbone 训练新分类层（lr=1e-3），再解冻整体微调（lr=1e-4）；训练集只用轻度增强（水平翻转、±8° 旋转、亮度/对比度扰动），验证/测试不做随机增强。
+- **诚实的设计**：课程原始 300 张 test **保持不变**；只把原 900 张训练图再拆成 fit 720 / validation 180，用 validation 选择"裂缝召回率 ≥ 0.90"的最高阈值，test 只做最后一次评估——没有拿测试集反复调参。
+- **消融对照**：`--no-pretrained` 是同结构 ResNet18 随机初始化，唯一区别是有无 ImageNet 预训练知识。
+- **命令**：`python transfer_experiment.py` 与 `python transfer_experiment.py --no-pretrained`（首次运行自动下载官方权重）
+- **结果（本机实测，CPU，默认 1 冻结 epoch + 1 微调 epoch，同一 300 张测试图）**：
+
+| 模型 | Accuracy | Crack Precision | Crack Recall | FN | FP |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Majority baseline | 0.500 | 0.500 | 1.000 | 0 | 150 |
+| SmallCNN | 0.813 | 0.892 | 0.713 | 43 | 13 |
+| ResNet18 pretrained @ 0.5 | 0.997 | 0.993 | 1.000 | 0 | 1 |
+| ResNet18 pretrained @ 阈值 0.9996 | 0.953 | 1.000 | 0.907 | 14 | 0 |
+| ResNet18 scratch @ 0.5 | 0.983 | 0.993 | 0.973 | 4 | 1 |
+
+- **消融结论**：同结构 ResNet18，pretrained 漏检 0 张、scratch 漏检 4 张（准确率 0.997 vs 0.983）——提升来自 ImageNet 预训练知识，而不是单纯把网络从 9,586 参数变大到 ResNet18。
+- **阈值实验的真实发现**：模型置信度太高，验证集按"召回率 ≥ 0.90"选出的阈值高达 **0.9996**；这个阈值在测试集上把漏检从 0 变回 14（recall 1.0 → 0.907），只换来少 1 张误报。对"漏检裂缝最贵"的维护业务，**默认 0.5 反而是漏检最少的工作点**——这正是"模型本身"与"如何使用模型输出"是两回事的实证，也说明阈值选择必须结合业务成本而不是机械套用。
+- **保持的边界**：子集结果仍受相关图像泄漏风险影响（训练/测试可能包含同一表面的相似图像块），不推广到全部 40,000 张；ResNet18 同样只用于安排人工复核顺序，不能当作结构安全结论。
+
 ## 5. 一个真实失败案例
 
 从 `runs/cnn.json` 的 `first_errors` 和 `runs/error-analysis.csv` 中选了一个真实的**漏检裂缝**（假阴性）——这是本场景里最该向使用者解释的错误类型：
@@ -124,18 +149,22 @@ python -m unittest discover -s tests -v
 
 两组观察：漏检的裂缝图整体更亮（0.716 vs 0.607）、边缘信号更弱（0.0166 vs 0.0198）；误报的无裂缝图是四组里最暗的（0.548），但边缘密度高于正常无裂缝图（0.0150 vs 0.0117）——暗表面上的阴影或污渍边缘容易被当成裂缝。注意这只是固定子集上的组均值观察，不是因果结论。
 
+ResNet18 扩展实验的剩余错误：pretrained @ 0.5 时，300 张测试图只剩 1 个误报、0 个漏检（混淆矩阵 [[149,1],[0,150]]）；但验证集选出的超高阈值 0.9996 会把 14 张真裂缝推成"无裂缝"——例如 `Positive/04283.jpg`，模型自己给出的裂缝概率高达 **0.9922**，只因为低于 0.9996 就被漏掉（见 `runs/resnet18_pretrained-errors.png`）。这张图同时也是 SmallCNN 漏检过的样本，说明它确实难。这也再次印证：阈值调过头会把最重要的错误（漏检裂缝）放回来。
+
 ## 6. 智能体与学生工作边界
 
-- 智能体提出/生成/修改了什么：复制 starter 到 `student-work/day-02-concrete`；完成 `models.py` 的 SmallCNN（TODO 1、TODO 2）；安装 CPU 版 torch/torchvision 依赖；运行单元测试、形状追踪与梯度检查；数据到位后运行 `--check-data`、基线与 CNN 训练并保存输出；编写 `analyze_errors.py` 做全部错误的分组统计；起草 README、report、submission.json 与 presentation.pptx
-- 学生怎样核对文件、来源、输出、测试和 diff：运行 `git diff` 确认 `train.py`、测试与指标定义未被修改；核对测试 3/3 通过；对照第 3 节形状追踪逐层确认输出维度；亲手把 `runs/cnn.json` 的数字与报告表格逐一核对（召回率 = 107/150、精确率 = 107/120 的验算过程见第 4 节）；打开 `runs/cnn-errors.png` 人工查看错误图像
+- 智能体提出/生成/修改了什么：复制 starter 到 `student-work/day-02-concrete`；完成 `models.py` 的 SmallCNN（TODO 1、TODO 2）；安装 CPU 版 torch/torchvision 依赖；运行单元测试、形状追踪与梯度检查；数据到位后运行 `--check-data`、基线与 CNN 训练并保存输出；编写 `analyze_errors.py` 做全部错误的分组统计；起草 README、report、submission.json 与 presentation.pptx；按 `解释.txt` 合入扩展包 `transfer_experiment.py` + 测试 + `EXTENSION.md`，实际跑出 pretrained / scratch 两组 ResNet18 实验并回填全部真实数字
+- 学生怎样核对文件、来源、输出、测试和 diff：运行 `git diff` 确认 `train.py`、测试与指标定义未被修改；核对测试 6/6 通过；对照第 3 节形状追踪逐层确认输出维度；亲手把 `runs/*.json` 的数字与报告表格逐一核对（召回率 = 107/150、精确率 = 107/120 的验算过程见第 4 节）；打开 `runs/cnn-errors.png` 人工查看错误图像
 - 学生修改或拒绝了什么建议：如实填写。已知的一次修正：`analyze_errors.py` 第一版把真实标签按列表顺序而非按索引对齐，导致错误计数变成 120 个误报——检查后定位到 `zip(test_indices, targets, predictions)` 没有按索引取标签，改成 `targets[index]` 后与 `cnn.json` 的 43+13 完全一致
-- 每名成员能独立解释的代码或证据：SmallCNN 每层的作用与形状变化；基线为什么只需要一次类别计数、以及数据均衡时"多数类"平票会发生什么；裂缝召回率怎么从混淆矩阵算出来；一条图像从 `ImageFolder` 读取 → resize 64×64 → 张量 → 模型 → argmax → 混淆矩阵的完整路线
+- 每名成员能独立解释的代码或证据：SmallCNN 每层的作用与形状变化；基线为什么只需要一次类别计数、以及数据均衡时"多数类"平票会发生什么；裂缝召回率怎么从混淆矩阵算出来；一条图像从 `ImageFolder` 读取 → resize 64×64 → 张量 → 模型 → argmax → 混淆矩阵的完整路线；扩展部分还要能解释：迁移学习（冻结 backbone → 微调）、fit/validation/test 三层划分为什么能防"拿测试集调阈值"、以及阈值与模型是两回事
 
 ## 7. 结论与限制
 
 在每类 600 张的固定子集（300 张留出测试图，seed 2026）上，SmallCNN 的准确率 0.813 明显超过多数类基线的 0.5，且把误报从 150 张降到 13 张——候选方法在同一条件下确实比基线更有用。但 CNN 漏检了 43/150 张真裂缝：筛查工具"优先推送可能有裂缝的照片"的同时，会把这些漏检照片排在后面，所以输出只能用于安排人工复核顺序，任何情况下都不能当作"无裂缝"的安全结论。
 
-数据限制：子集按类别随机抽样，未按混凝土表面分组，来自同一表面的相似图像块可能同时出现在训练和测试两边，测试分数可能过于乐观；子集结果不代表全部 40,000 张。方法限制：SmallCNN 只有 9,586 个参数、只训练 2 个 epoch，结论只证明"这个结构比总猜一类更有用"，不证明接近最优。决策限制：模型没有不确定性估计，异常材质、不同拍摄环境的照片必须交给人；筛查结果不能替代现场检查、工程师判断或安全决策。
+扩展实验在同一 300 张测试图上进一步证明：ImageNet 预训练的 ResNet18（@0.5）把漏检降到 0 张、误报只剩 1 张；同结构随机初始化的 ResNet18 漏检 4 张——消融实验说明提升来自预训练知识，而不是单纯网络变大。同时阈值实验给出一个重要反面教训：验证集选出的超高阈值 0.9996 反而制造了 14 个漏检，说明"模型"和"如何使用模型输出"是两回事，阈值必须结合业务成本选择，不能机械套用。
+
+数据限制：子集按类别随机抽样，未按混凝土表面分组，来自同一表面的相似图像块可能同时出现在训练和测试两边，测试分数可能过于乐观——ResNet18 近乎完美的 0.997 准确率同样受此影响；子集结果不代表全部 40,000 张。方法限制：SmallCNN 只有 9,586 个参数、只训练 2 个 epoch；ResNet18 扩展只跑了 1 冻结 epoch + 1 微调 epoch（CPU 时间约束），两者都不证明接近最优。决策限制：模型没有不确定性估计，异常材质、不同拍摄环境的照片必须交给人；筛查结果不能替代现场检查、工程师判断或安全决策。
 
 ## 8. 提交复核
 

@@ -8,7 +8,9 @@
 train.py            # 主程序：真实数据检查、固定子集与划分、基线/CNN 训练与评估、错误图像网格
 models.py           # SmallCNN（学生完成的核心改动：TODO 1 与 TODO 2）
 analyze_errors.py   # 错误分析：同一划分上重训，导出全部 56 个错误的图像统计
-tests/              # 单元测试（不依赖真实数据：张量形状、划分逻辑、混淆计数）
+transfer_experiment.py  # 扩展：ResNet18 迁移学习 + 漏检优先阈值选择（见 EXTENSION.md）
+EXTENSION.md        # 扩展实验说明
+tests/              # 单元测试（不依赖真实数据：张量形状、划分逻辑、混淆计数、阈值选择）
 requirements.txt    # 依赖：torch>=2.5、torchvision>=0.20、matplotlib>=3.9
 data/raw/           # 真实数据（需从 Kaggle 下载，不入库，被 .gitignore 排除）
 runs/               # 运行后生成：baseline.json / cnn.json 指标、errors.png 错误网格、error-analysis.csv（不入库）
@@ -53,7 +55,7 @@ python analyze_errors.py
 
 # 8. 运行单元测试
 python -m unittest discover -s tests -v
-# 预期：3 个测试全部 OK
+# 预期：6 个测试全部 OK
 ```
 
 ## 常见问题
@@ -100,6 +102,38 @@ python -m unittest discover -s tests -v
 | 混淆矩阵 [TN,FP;FN,TP] | [[0,150],[0,150]] | [[137,13],[43,107]] | 行=真实，列=预测，标签顺序 no_crack/crack |
 
 CNN 训练损失：[0.6818, 0.6186]（2 个 epoch，CPU 约 11 秒）。
+
+## 扩展实验：迁移学习与漏检优先阈值
+
+在课程要求的 Baseline + SmallCNN 之外，`transfer_experiment.py` 增加一个可复查的迁移学习对照，回答两个额外问题：
+
+1. 相同真实数据与测试集上，ImageNet 预训练的 ResNet18 是否比从零学习更有效？
+2. 当业务更怕漏检裂缝时，能否用验证集选择决策阈值，提高裂缝召回率，并明确展示增加的误报代价？
+
+做法：保持课程原始 300 张 test 不变；把原 900 张训练图再拆成 fit / validation，用 validation 选择"召回率 ≥ 目标值"的最高阈值；训练只用轻度增强（翻转、±8° 旋转、亮度/对比度扰动），验证/测试不做随机增强。
+
+运行：
+
+```powershell
+python transfer_experiment.py                  # ImageNet 预训练 ResNet18
+python transfer_experiment.py --no-pretrained  # 同结构、随机初始化（消融对照）
+```
+
+首次运行会自动下载 ResNet18 官方权重（需联网）。输出见 `runs/resnet18_pretrained.json`、`runs/resnet18_pretrained-errors.png`、`runs/resnet18_pretrained-validation-recall-threshold.png`（scratch 对应 `resnet18_scratch_*`）。详细说明见 [EXTENSION.md](EXTENSION.md)。
+
+| 模型 | Accuracy | Crack Precision | Crack Recall | FN | FP |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Majority baseline | 0.500 | 0.500 | 1.000 | 0 | 150 |
+| SmallCNN | 0.813 | 0.892 | 0.713 | 43 | 13 |
+| ResNet18 pretrained @ 0.5 | 0.997 | 0.993 | 1.000 | 0 | 1 |
+| ResNet18 pretrained @ 阈值 0.9996 | 0.953 | 1.000 | 0.907 | 14 | 0 |
+| ResNet18 scratch @ 0.5 | 0.983 | 0.993 | 0.973 | 4 | 1 |
+
+本机实测（CPU，默认 1 冻结 epoch + 1 微调 epoch）：
+
+- **消融结论**：同结构 ResNet18，pretrained（漏检 0）明显好于 scratch（漏检 4）——提升来自 ImageNet 预训练知识，而不是单纯把网络变大。
+- **阈值实验**：验证集按"召回率 ≥ 0.90"选出的阈值高达 0.9996（模型置信度太高），它在测试集上漏检 14 张（recall 0.907）却换来 0 误报——对"漏检裂缝最贵"的业务，默认 0.5 反而是漏检最少的工作点。这正好说明：模型本身和"如何使用模型输出"是两回事。
+- **边界**：子集结果仍受相关图像泄漏风险影响，不推广到全部 40,000 张；输出仍只用于安排人工复核顺序。
 
 ## 限制
 
